@@ -24,7 +24,6 @@ from typing import Optional
 from config.settings import (
     BATES_PATTERN,
     DEPOSITIONS_FOLDER,
-    EXHIBIT_LIST_FILENAME,
 )
 from graph_api_client import GraphAPIClient
 from fact_sheet_manager import FactSheetManager
@@ -269,12 +268,20 @@ class DepositionParser:
             if not fact_text.strip():
                 continue
 
+            # Build deposition exhibit reference (e.g. "Smith Ex. 5")
+            depo_exhibit_ref = ""
+            if ref.deposition and ref.deposition.deponent_name and ref.exhibit_number:
+                exhibit_num = re.sub(r"\D", "", ref.exhibit_number)
+                if exhibit_num:
+                    depo_exhibit_ref = f"{ref.deposition.deponent_name} Ex. {exhibit_num}"
+
             self.fact_manager.add_fact(
                 bates_number=bates,
                 fact_text=fact_text.strip(),
                 source=f"Deposition: {depo_source}",
                 tags="Deposition Excerpt",
                 created_by="Deposition Parser",
+                deposition_exhibit_ref=depo_exhibit_ref,
             )
             written += 1
 

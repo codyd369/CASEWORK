@@ -3,6 +3,7 @@ Fact Sheet Manager.
 
 Manages the Fact Sheet Excel workbook in SharePoint:
 - Read/write individual facts
+- Concurrent-safe append via download-append-upload with retry
 - Import pre-compiled fact excerpts with fuzzy matching
 - Maintain tag registry
 - Provide data for the CaseMap timeline visualization
@@ -11,6 +12,7 @@ Manages the Fact Sheet Excel workbook in SharePoint:
 import io
 import logging
 import re
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -21,13 +23,15 @@ from openpyxl.styles import Font
 from config.settings import (
     AUTO_POPULATE_COLUMNS,
     BATES_PATTERN,
-    DOCUMENTS_FOLDER,
     FACT_SHEET_COLUMNS,
     FACT_SHEET_FILENAME,
 )
 from graph_api_client import GraphAPIClient
 
 logger = logging.getLogger(__name__)
+
+# Lock to serialize fact sheet writes within a single process
+_write_lock = threading.Lock()
 
 
 def generate_fact_id() -> str:
@@ -107,9 +111,10 @@ class FactSheetManager:
         created_by: str,
         document_date: str = "",
         exhibit_metadata: Optional[dict] = None,
+        deposition_exhibit_ref: str = "",
     ) -> str:
         """
-        Add a new fact to the fact sheet.
+        Add a new fact to the in-memory fact sheet.
 
         Args:
             bates_number: Source document Bates number.
@@ -119,6 +124,7 @@ class FactSheetManager:
             created_by: User who created this fact.
             document_date: Date of the underlying document (for timeline).
             exhibit_metadata: Dict of metadata fields to copy from the exhibit.
+            deposition_exhibit_ref: Deposition exhibit reference (e.g. "Smith Ex. 5").
 
         Returns: The generated Fact ID.
         """
@@ -133,6 +139,8 @@ class FactSheetManager:
         self._set_cell(new_row, "Created By", created_by)
         self._set_cell(new_row, "Created Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self._set_cell(new_row, "Document Date", document_date)
+        if deposition_exhibit_ref:
+            self._set_cell(new_row, "Deposition Exhibit", deposition_exhibit_ref)
 
         # Copy exhibit metadata if provided
         if exhibit_metadata:
@@ -141,6 +149,45 @@ class FactSheetManager:
                     self._set_cell(new_row, col_name, exhibit_metadata[col_name])
 
         logger.info(f"Added fact {fact_id} for Bates '{bates_number}'.")
+        return fact_id
+
+    def append_fact_safe(
+        self,
+        bates_number: str,
+        fact_text: str,
+        source: str,
+        tags: str,
+        created_by: str,
+        document_date: str = "",
+        exhibit_metadata: Optional[dict] = None,
+    ) -> str:
+        """
+        Concurrent-safe fact append: downloads the latest fact sheet,
+        appends one row, and re-uploads. Uses a thread lock to prevent
+        race conditions within the same process.
+
+        This is the method the web app should use instead of
+        add_fact() + save() which is vulnerable to overwrites.
+
+        Returns: The generated Fact ID.
+        """
+        with _write_lock:
+            # Re-download the latest version to avoid overwriting another user's data
+            self.load()
+
+            fact_id = self.add_fact(
+                bates_number=bates_number,
+                fact_text=fact_text,
+                source=source,
+                tags=tags,
+                created_by=created_by,
+                document_date=document_date,
+                exhibit_metadata=exhibit_metadata,
+            )
+
+            # Upload immediately
+            self.save()
+
         return fact_id
 
     def update_fact(self, fact_id: str, updates: dict) -> bool:
@@ -229,12 +276,6 @@ class FactSheetManager:
         Attempts to match each fact to a Bates number. Facts without a clean
         match are flagged for manual review.
 
-        Args:
-            file_path_or_stream: Local file path or BytesIO stream.
-            source_label: Source label for imported facts.
-            from_sharepoint: If True, download from SharePoint first.
-            sharepoint_path: SharePoint relative path (if from_sharepoint).
-
         Returns: Dict with counts: {imported, flagged, total}.
         """
         if from_sharepoint and sharepoint_path:
@@ -276,7 +317,6 @@ class FactSheetManager:
                     tag_idx = i
 
             if text_idx is None:
-                # If no obvious text column, use the second column (or first non-Bates)
                 for i in range(len(headers)):
                     if i != bates_idx:
                         text_idx = i
@@ -286,25 +326,21 @@ class FactSheetManager:
                 if not row_data:
                     continue
 
-                # Extract fact text
                 fact_text = ""
                 if text_idx is not None and text_idx < len(row_data):
                     fact_text = str(row_data[text_idx]) if row_data[text_idx] else ""
                 if not fact_text.strip():
                     continue
 
-                # Extract Bates number
                 bates = ""
                 if bates_idx is not None and bates_idx < len(row_data):
                     bates = str(row_data[bates_idx]).strip() if row_data[bates_idx] else ""
 
-                # If no Bates column or empty, try to find a Bates number in the text
                 if not bates:
                     match = re.search(BATES_PATTERN, fact_text)
                     if match:
                         bates = match.group()
 
-                # Extract optional date
                 doc_date = ""
                 if date_idx is not None and date_idx < len(row_data):
                     val = row_data[date_idx]
@@ -314,7 +350,6 @@ class FactSheetManager:
                         else:
                             doc_date = str(val)
 
-                # Extract optional tags
                 tags = source_label
                 if tag_idx is not None and tag_idx < len(row_data):
                     val = row_data[tag_idx]
@@ -332,7 +367,6 @@ class FactSheetManager:
                     )
                     imported += 1
                 else:
-                    # Flag for manual review
                     flagged += 1
                     flagged_rows.append({
                         "text": fact_text.strip()[:100],
@@ -342,7 +376,6 @@ class FactSheetManager:
 
         wb.close()
 
-        # Log flagged items
         if flagged_rows:
             logger.warning(f"Flagged {flagged} facts for manual review:")
             for item in flagged_rows[:10]:
@@ -366,12 +399,6 @@ class FactSheetManager:
 
         Uses rapidfuzz to find close matches when exact Bates numbers
         aren't found.
-
-        Args:
-            file_path_or_stream: Local file path or BytesIO stream.
-            all_bates_numbers: Set of valid Bates numbers to match against.
-            source_label: Source label for imported facts.
-            threshold: Minimum fuzzy match score (0-100).
 
         Returns: Dict with counts and flagged items.
         """
@@ -429,13 +456,11 @@ class FactSheetManager:
                 if bates_idx is not None and bates_idx < len(row_data):
                     bates = str(row_data[bates_idx]).strip() if row_data[bates_idx] else ""
 
-                # Try exact match first
                 if bates in all_bates_numbers:
                     self.add_fact(bates, fact_text.strip(), source_label, source_label, "Import")
                     imported += 1
                     continue
 
-                # Try fuzzy match
                 if bates:
                     match_result = process.extractOne(bates, bates_list, scorer=fuzz.ratio)
                     if match_result and match_result[1] >= threshold:
@@ -447,7 +472,6 @@ class FactSheetManager:
                                     f"(score: {match_result[1]})")
                         continue
 
-                # Try to find Bates in text
                 match = re.search(BATES_PATTERN, fact_text)
                 if match and match.group() in all_bates_numbers:
                     self.add_fact(match.group(), fact_text.strip(), source_label,

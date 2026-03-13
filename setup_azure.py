@@ -34,24 +34,39 @@ def main():
         print("ERROR: Tenant ID and Client ID are required.")
         sys.exit(1)
 
-    # Update settings file
-    settings_path = os.path.join(os.path.dirname(__file__), "config", "settings.py")
-    with open(settings_path, "r") as f:
-        content = f.read()
+    # Write credentials to .env file (settings.py reads from it automatically)
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_lines = {}
 
-    content = content.replace('AZURE_TENANT_ID = "YOUR_TENANT_ID"',
-                              f'AZURE_TENANT_ID = "{tenant_id}"')
-    content = content.replace('AZURE_CLIENT_ID = "YOUR_CLIENT_ID"',
-                              f'AZURE_CLIENT_ID = "{client_id}"')
+    # Read existing .env if present
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    key, _, val = stripped.partition("=")
+                    env_lines[key.strip()] = val.strip()
+
+    env_lines["AZURE_TENANT_ID"] = tenant_id
+    env_lines["AZURE_CLIENT_ID"] = client_id
     if client_secret:
-        content = content.replace('AZURE_CLIENT_SECRET = "YOUR_CLIENT_SECRET"',
-                                  f'AZURE_CLIENT_SECRET = "{client_secret}"')
+        env_lines["AZURE_CLIENT_SECRET"] = client_secret
 
-    with open(settings_path, "w") as f:
-        f.write(content)
+    with open(env_path, "w") as f:
+        f.write("# Azure AD / Entra ID App Registration\n")
+        f.write(f"AZURE_TENANT_ID={env_lines['AZURE_TENANT_ID']}\n")
+        f.write(f"AZURE_CLIENT_ID={env_lines['AZURE_CLIENT_ID']}\n")
+        if "AZURE_CLIENT_SECRET" in env_lines:
+            f.write(f"AZURE_CLIENT_SECRET={env_lines['AZURE_CLIENT_SECRET']}\n")
+        f.write("\n")
+        # Write any other keys that were in the file
+        for key, val in env_lines.items():
+            if key not in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
+                f.write(f"{key}={val}\n")
 
     print()
-    print("Settings updated successfully!")
+    print(f"Credentials saved to {env_path}")
+    print("  (settings.py reads from .env automatically — no need to edit settings.py)")
     print()
 
     # Test connection

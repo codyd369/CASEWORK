@@ -98,12 +98,19 @@ def run_sync(
     # ── Step 3: Load exhibit list ──
     logger.info("Step 3: Loading exhibit list...")
     exhibit_mgr = ExhibitListManager(client, indexer)
-    if local_mode and local_exhibit_list:
-        import openpyxl
-        exhibit_mgr._wb = openpyxl.load_workbook(local_exhibit_list)
-        exhibit_mgr._find_data_sheet()
-    elif not local_mode:
-        exhibit_mgr.load()
+    try:
+        if local_mode and local_exhibit_list:
+            import openpyxl
+            exhibit_mgr._wb = openpyxl.load_workbook(local_exhibit_list)
+            exhibit_mgr._find_data_sheet()
+        elif not local_mode:
+            exhibit_mgr.load()
+    except Exception as e:
+        logger.error(f"  Could not load exhibit list: {e}")
+        logger.error("  Create Exhibit_List.xlsx in SharePoint first (see README).")
+        logger.info("  Continuing without exhibit list — steps 4-7 will be skipped.")
+        results["exhibit_list_error"] = str(e)
+        return results
 
     existing_count = len(exhibit_mgr.get_all_bates_numbers())
     results["existing_exhibits"] = existing_count

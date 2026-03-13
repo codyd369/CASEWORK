@@ -1,17 +1,30 @@
 """
 Configuration settings for the Arbitration Exhibit Management System.
 
-Update these values to match your Azure AD app registration and SharePoint site.
+Credentials are loaded from environment variables or a .env file.
+Copy .env.example to .env and fill in your values.
 """
 
+import os
+
+# Load .env file if present (no dependency required — just os.environ fallback)
+_env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+if os.path.exists(_env_file):
+    with open(_env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
 # ── Azure AD / Entra ID App Registration ──
-AZURE_TENANT_ID = "YOUR_TENANT_ID"
-AZURE_CLIENT_ID = "YOUR_CLIENT_ID"
-AZURE_CLIENT_SECRET = "YOUR_CLIENT_SECRET"  # For daemon/service flows
+AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "YOUR_TENANT_ID")
+AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "YOUR_CLIENT_ID")
+AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "YOUR_CLIENT_SECRET")
 AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
 AZURE_SCOPES = ["https://graph.microsoft.com/.default"]
 
-# For interactive (user-delegated) auth — used by the web app and setup script
+# For interactive (user-delegated) auth — used by setup script
 AZURE_SCOPES_DELEGATED = [
     "Files.ReadWrite.All",
     "Sites.ReadWrite.All",
@@ -19,17 +32,20 @@ AZURE_SCOPES_DELEGATED = [
 ]
 
 # ── SharePoint Site ──
-SHAREPOINT_SITE_URL = "https://blueprintconstructionlaw.sharepoint.com/sites/PCLFormosa813"
+SHAREPOINT_SITE_URL = os.environ.get(
+    "SHAREPOINT_SITE_URL",
+    "https://blueprintconstructionlaw.sharepoint.com/sites/PCLFormosa813",
+)
 SHAREPOINT_SITE_ID = ""  # Will be resolved at runtime via Graph API
 SHAREPOINT_DRIVE_ID = ""  # Will be resolved at runtime
 
 # Path within the SharePoint document library
 # "General" is the root folder for the default Teams channel
-BASE_FOLDER_PATH = "General/_Hearing Prep/Exhibits"
+BASE_FOLDER_PATH = os.environ.get("BASE_FOLDER_PATH", "General/_Hearing Prep/Exhibits")
 
 # ── File Paths within SharePoint (relative to BASE_FOLDER_PATH) ──
-EXHIBIT_LIST_FILENAME = "Exhibit_List.xlsx"
-FACT_SHEET_FILENAME = "Fact_Sheet.xlsx"
+EXHIBIT_LIST_FILENAME = os.environ.get("EXHIBIT_LIST_FILENAME", "Exhibit_List.xlsx")
+FACT_SHEET_FILENAME = os.environ.get("FACT_SHEET_FILENAME", "Fact_Sheet.xlsx")
 ALL_DOCS_FOLDER = "All_Docs"       # Subfolder containing the all-docs xlsx files
 DOCUMENTS_FOLDER = "Documents"     # Subfolder containing the Bates-numbered documents
 DEPOSITIONS_FOLDER = "Depositions" # Subfolder containing deposition transcripts
@@ -58,6 +74,7 @@ AUTO_POPULATE_COLUMNS = [
 FACT_SHEET_COLUMNS = [
     "Fact ID", "Bates", "Fact Text", "Source", "Tag",
     "Created By", "Created Date", "Document Date",
+    "Deposition Exhibit",  # e.g. "Smith Ex. 5"
     # Inherited metadata from exhibit list:
     "Family Date", "File Name", "Email Subject", "File Path",
     "From", "To", "CC", "BCC", "Issues", "Family Relationship", "File Type",

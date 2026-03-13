@@ -12,8 +12,6 @@ Manages the exhibit list Excel workbook in SharePoint:
 import io
 import logging
 import re
-from copy import copy
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -24,7 +22,6 @@ from config.settings import (
     AUTO_POPULATE_COLUMNS,
     BATES_PATTERN,
     DOCUMENTS_FOLDER,
-    EXHIBIT_LIST_COLUMNS,
     EXHIBIT_LIST_FILENAME,
 )
 from all_docs_indexer import AllDocsIndexer

@@ -2,23 +2,13 @@
 Fact Entry Web App.
 
 A Flask-based web form for creating facts during document review.
-Replaces the tkinter companion app — works on any OS/browser, and
-can be embedded as a Microsoft Teams tab.
+Works on any OS/browser, can be embedded as a Microsoft Teams tab.
 
-Workflow:
-1. Start the server: python fact_entry_web.py
-2. Open http://localhost:5050 in any browser
-3. Enter a Bates number, paste fact text, pick tags, submit
-4. The fact is written to the Fact Sheet on SharePoint
-
-Features:
-- Clean responsive UI that works in any browser
-- Clipboard paste support (Ctrl+V into the text area)
-- Tag autocomplete from existing tags + create new
-- Recent Bates number history (per session)
-- Document open links (launches native app via SharePoint URL)
-- Real-time connection status
-- Can be embedded as a Teams tab via the website URL
+Multi-user safe:
+- Each user enters their name on the form (no server-side auth dependency)
+- Fact submission uses download-append-upload with a thread lock to prevent
+  concurrent overwrites
+- Document URL cache refreshes automatically
 
 Usage:
     python fact_entry_web.py                     # Start on port 5050
@@ -28,9 +18,7 @@ Usage:
 
 import argparse
 import logging
-import os
-import sys
-from datetime import datetime
+import time
 from typing import Optional
 
 from flask import Flask, jsonify, render_template_string, request
@@ -44,47 +32,57 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# ── Global State ──
-# These are initialized on first connect and reused across requests.
-# For a multi-user shared server, you'd want per-user sessions instead.
+# ── Shared State (thread-safe via FactSheetManager._write_lock) ──
 _client: Optional[GraphAPIClient] = None
 _fact_manager: Optional[FactSheetManager] = None
-_user_name: str = ""
 _connected: bool = False
 _tags: list[str] = []
-_recent_bates: list[str] = []
-_document_urls: dict[str, str] = {}  # bates → SharePoint URL
+_document_urls: dict[str, str] = {}
+_document_urls_loaded_at: float = 0
+DOCUMENT_URL_CACHE_TTL = 300  # Refresh document URLs every 5 minutes
 
 
 def _ensure_connected():
-    """Initialize the Graph API client and fact manager if not already done."""
-    global _client, _fact_manager, _user_name, _connected, _tags, _document_urls
+    """Initialize the Graph API client (daemon auth — no user identity)."""
+    global _client, _fact_manager, _connected, _tags
 
     if _connected:
         return
 
-    _client = GraphAPIClient(use_delegated_auth=True)
-    _user_name = _client.get_current_user_name()
+    _client = GraphAPIClient(use_delegated_auth=False)
 
     _fact_manager = FactSheetManager(_client)
     _fact_manager.load()
 
     _tags = _fact_manager.get_all_tags()
+    _refresh_document_urls()
 
-    # Pre-load document URLs for the "Open Document" links
+    _connected = True
+    logger.info("Connected to SharePoint (daemon auth)")
+
+
+def _refresh_document_urls():
+    """Refresh the document URL cache if stale."""
+    global _document_urls, _document_urls_loaded_at
+
+    now = time.time()
+    if _document_urls and (now - _document_urls_loaded_at) < DOCUMENT_URL_CACHE_TTL:
+        return
+
     try:
         folder_files = _client.list_files_in_folder(DOCUMENTS_FOLDER)
+        new_urls = {}
         for stem, info in folder_files.items():
             url = info["webUrl"]
             ext = info["extension"]
             if ext in (".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"):
                 url = f"{url}?web=0"
-            _document_urls[stem] = url
+            new_urls[stem] = url
+        _document_urls = new_urls
+        _document_urls_loaded_at = now
+        logger.info(f"Refreshed document URL cache: {len(new_urls)} documents.")
     except Exception as e:
-        logger.warning(f"Could not load document URLs: {e}")
-
-    _connected = True
-    logger.info(f"Connected as {_user_name}")
+        logger.warning(f"Could not refresh document URLs: {e}")
 
 
 # ── HTML Template ──
@@ -267,10 +265,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             border: 1px solid #e2e8f0;
         }
         .btn-secondary:hover { background: #e2e8f0; }
-        .btn-success {
-            background: #16a34a;
-            color: white;
-        }
 
         .btn-row {
             display: flex;
@@ -298,14 +292,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .toast.show { transform: translateY(0); opacity: 1; }
         .toast.success { background: #16a34a; }
         .toast.error { background: #dc2626; }
-
-        .doc-link {
-            color: #2563eb;
-            text-decoration: none;
-            font-size: 13px;
-            font-weight: 500;
-        }
-        .doc-link:hover { text-decoration: underline; }
 
         .recent-list {
             display: flex;
@@ -357,6 +343,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <div class="container">
         <div class="card">
+            <!-- Your Name -->
+            <div class="form-group">
+                <label>Your Name</label>
+                <input type="text" id="userNameInput" placeholder="Enter your name"
+                       autocomplete="off">
+                <div class="hint">This will be recorded as the fact creator</div>
+            </div>
+
             <!-- Bates Number -->
             <div class="bates-row">
                 <div class="form-group">
@@ -397,13 +391,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="tag-suggestions" id="existingTags"></div>
             </div>
 
-            <!-- Source (read-only, auto-filled) -->
-            <div class="form-group">
-                <label>Created By</label>
-                <input type="text" id="sourceInput" readonly
-                       style="background:#f1f5f9; color:#64748b;">
-            </div>
-
             <!-- Actions -->
             <div class="btn-row">
                 <button class="btn btn-secondary" onclick="clearForm()">Clear</button>
@@ -422,13 +409,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let selectedTags = [];
         let recentBates = [];
         let documentUrls = {};
-        let userName = '';
 
-        // ── Init ──
+        // Persist user name in localStorage
+        const savedName = localStorage.getItem('factEntryUserName') || '';
         window.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('userNameInput').value = savedName;
+            document.getElementById('userNameInput').addEventListener('change', e => {
+                localStorage.setItem('factEntryUserName', e.target.value.trim());
+            });
             connect();
-
-            // Enter key in tag input adds the tag
             document.getElementById('tagInput').addEventListener('keydown', e => {
                 if (e.key === 'Enter') { e.preventDefault(); addTag(); }
             });
@@ -444,13 +433,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const data = await resp.json();
 
                 if (data.ok) {
-                    userName = data.user_name;
                     allTags = data.tags || [];
                     documentUrls = data.document_urls || {};
 
-                    badge.textContent = userName;
+                    badge.textContent = 'Connected';
                     badge.className = 'status connected';
-                    document.getElementById('sourceInput').value = userName;
 
                     populateTagSuggestions();
                     updateTagDatalist();
@@ -500,7 +487,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if (selectedTags.includes(tag)) return;
             selectedTags.push(tag);
 
-            // Add to known tags if new
             if (!allTags.includes(tag)) {
                 allTags.push(tag);
                 allTags.sort();
@@ -536,15 +522,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if (url) {
                 window.open(url, '_blank');
             } else {
-                showToast('No document found for ' + bates, 'error');
+                // Try fetching fresh from server (document may have been added recently)
+                fetch('/api/document-url/' + encodeURIComponent(bates))
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.ok) {
+                            documentUrls[bates] = data.url;
+                            window.open(data.url, '_blank');
+                        } else {
+                            showToast('No document found for ' + bates, 'error');
+                        }
+                    });
             }
         }
 
         async function submitFact() {
+            const userName = document.getElementById('userNameInput').value.trim();
             const bates = document.getElementById('batesInput').value.trim();
             const factText = document.getElementById('factText').value.trim();
             const tags = selectedTags.join(', ');
 
+            if (!userName) { showToast('Enter your name first', 'error'); return; }
             if (!bates) { showToast('Bates number is required', 'error'); return; }
             if (!factText) { showToast('Fact text is required', 'error'); return; }
 
@@ -560,6 +558,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         bates: bates,
                         fact_text: factText,
                         tags: tags || 'Untagged',
+                        user_name: userName,
                     }),
                 });
                 const data = await resp.json();
@@ -567,17 +566,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 if (data.ok) {
                     showToast('Fact ' + data.fact_id + ' created!', 'success');
 
-                    // Add to recent Bates
                     if (!recentBates.includes(bates)) {
                         recentBates.unshift(bates);
                         if (recentBates.length > 15) recentBates.pop();
                         renderRecentBates();
                     }
 
-                    // Clear form (keep Bates for consecutive facts from same doc)
                     document.getElementById('factText').value = '';
                     selectedTags = [];
                     renderSelectedTags();
+
+                    // Update tags from server response
+                    if (data.tags) {
+                        allTags = data.tags;
+                        populateTagSuggestions();
+                        updateTagDatalist();
+                    }
                 } else {
                     showToast('Error: ' + (data.error || 'Unknown'), 'error');
                 }
@@ -630,13 +634,12 @@ def index():
 
 @app.route("/api/connect", methods=["POST"])
 def api_connect():
-    """Initialize connection to SharePoint and return user info + tags."""
-    global _tags
+    """Initialize connection to SharePoint and return tags + doc URLs."""
     try:
         _ensure_connected()
+        _refresh_document_urls()
         return jsonify({
             "ok": True,
-            "user_name": _user_name,
             "tags": _tags,
             "document_urls": _document_urls,
         })
@@ -647,7 +650,12 @@ def api_connect():
 
 @app.route("/api/submit-fact", methods=["POST"])
 def api_submit_fact():
-    """Submit a new fact to the Fact Sheet."""
+    """
+    Submit a new fact to the Fact Sheet.
+
+    Uses append_fact_safe() which re-downloads the latest fact sheet
+    before appending, preventing concurrent overwrites.
+    """
     try:
         _ensure_connected()
 
@@ -655,29 +663,30 @@ def api_submit_fact():
         bates = data.get("bates", "").strip()
         fact_text = data.get("fact_text", "").strip()
         tags = data.get("tags", "Untagged").strip()
+        user_name = data.get("user_name", "Unknown").strip()
 
         if not bates:
             return jsonify({"ok": False, "error": "Bates number is required"})
         if not fact_text:
             return jsonify({"ok": False, "error": "Fact text is required"})
+        if not user_name:
+            return jsonify({"ok": False, "error": "Your name is required"})
 
-        fact_id = _fact_manager.add_fact(
+        # Concurrent-safe: re-downloads sheet, appends, re-uploads under lock
+        fact_id = _fact_manager.append_fact_safe(
             bates_number=bates,
             fact_text=fact_text,
-            source=_user_name,
+            source=user_name,
             tags=tags,
-            created_by=_user_name,
+            created_by=user_name,
         )
 
-        # Save to SharePoint immediately
-        _fact_manager.save()
-
-        # Update tags cache
+        # Refresh tags from the now-current fact sheet
         global _tags
         _tags = _fact_manager.get_all_tags()
 
-        logger.info(f"Fact {fact_id} created by {_user_name} for Bates {bates}")
-        return jsonify({"ok": True, "fact_id": fact_id})
+        logger.info(f"Fact {fact_id} created by '{user_name}' for Bates {bates}")
+        return jsonify({"ok": True, "fact_id": fact_id, "tags": _tags})
 
     except Exception as e:
         logger.error(f"Submit failed: {e}")
@@ -697,6 +706,7 @@ def api_tags():
 @app.route("/api/document-url/<bates>")
 def api_document_url(bates):
     """Get the SharePoint URL for a document by Bates number."""
+    _refresh_document_urls()
     url = _document_urls.get(bates)
     if url:
         return jsonify({"ok": True, "url": url})

@@ -10,9 +10,18 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure Azure AD
+
+**Option A — Interactive setup:**
 ```bash
 python setup_azure.py
 ```
+
+**Option B — Manual .env file:**
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+```
+
 You'll need from your IT admin:
 - **Tenant ID** (Azure AD / Entra ID)
 - **Client ID** (Application / Client ID)
@@ -24,6 +33,8 @@ Required API permissions (admin must grant consent):
 - `User.Read`
 
 The app registration needs a redirect URI of `http://localhost` for interactive auth.
+
+> **Security:** Never commit the `.env` file — it's already in `.gitignore`.
 
 ### 3. SharePoint Folder Structure
 Set up this folder structure in your Teams channel's Files tab (under `General/_Hearing Prep/Exhibits/`):
@@ -40,12 +51,15 @@ Exhibits/
 │   ├── ABC-00012345.pdf
 │   ├── ABC-00012346.docx
 │   └── ...
-└── Depositions/               # Deposition transcript files
-    ├── Depo_JohnDoe.txt
+└── Depositions/               # Deposition transcript files (named by last name)
+    ├── Smith.txt
+    ├── Jones.pdf
     └── ...
 ```
 
-Update paths in `config/settings.py` if your structure differs.
+Deposition files must be named by the deponent's last name (e.g. `Smith.txt`). This matches the exhibit list's Deposition column format (`Smith Ex. 5; Jones Ex. 12`).
+
+Update paths in `config/settings.py` or via environment variables in `.env` if your structure differs.
 
 ### 4. Run the Sync
 ```bash
@@ -70,6 +84,8 @@ python sync_runner.py --skip-index
 python fact_entry_web.py
 ```
 Opens at `http://localhost:5050`. Works in any browser on any OS.
+
+Each user enters their name in the app — it's saved in browser localStorage so they only need to enter it once. All facts are attributed to the name entered.
 
 To share on the network (so all 10 users can use one instance):
 ```bash
@@ -121,7 +137,7 @@ Open `timeline.html` in any browser. Share via Teams/SharePoint by uploading the
 
 ## Concurrent Access
 
+- The fact entry web app uses thread-safe locking — multiple users can submit facts simultaneously without data loss
 - The sync scripts minimize write-lock time by downloading, modifying in-memory, then uploading
-- The fact entry web app saves after each individual fact submission
 - Avoid running multiple sync scripts simultaneously
 - Excel Online provides concurrent editing of the exhibit list between sync runs
