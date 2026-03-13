@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log
+dist/
+build/
+*.spec
+*.egg-info/
+.casework_token_cache.json
+casemap_timeline.html
+deposition_report.txt
+Fact_Sheet_output.xlsx
+venv/
+.venv/

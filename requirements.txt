@@ -1,0 +1,33 @@
+# Microsoft Graph API / Azure AD
+msal>=1.24.0
+requests>=2.31.0
+
+# Excel handling
+openpyxl>=3.1.2
+
+# PDF text extraction
+pdfplumber>=0.10.0
+PyMuPDF>=1.23.0
+
+# Word document handling
+python-docx>=0.8.11
+
+# Email parsing
+extract-msg>=0.45.0
+
+# GUI for companion app
+# tkinter is included with Python stdlib on most platforms
+# PyQt5 as alternative (uncomment if needed)
+# PyQt5>=5.15.0
+
+# Visualization
+plotly>=5.18.0
+
+# Fuzzy matching for pre-compiled facts
+rapidfuzz>=3.5.0
+
+# Cross-platform clipboard
+pyperclip>=1.8.2
+
+# Packaging (for building standalone executables)
+pyinstaller>=6.0.0
