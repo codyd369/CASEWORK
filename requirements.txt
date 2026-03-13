@@ -15,10 +15,8 @@ python-docx>=0.8.11
 # Email parsing
 extract-msg>=0.45.0
 
-# GUI for companion app
-# tkinter is included with Python stdlib on most platforms
-# PyQt5 as alternative (uncomment if needed)
-# PyQt5>=5.15.0
+# Web-based fact entry app
+flask>=3.0.0
 
 # Visualization
 plotly>=5.18.0

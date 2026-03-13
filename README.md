@@ -65,11 +65,19 @@ python sync_runner.py --schedule
 python sync_runner.py --skip-index
 ```
 
-### 5. Launch the Companion App
+### 5. Launch the Fact Entry Web App
 ```bash
-python fact_entry_app.py
+python fact_entry_web.py
 ```
-Click **Connect to SharePoint** → sign in with your Microsoft account → start creating facts.
+Opens at `http://localhost:5050`. Works in any browser on any OS.
+
+To share on the network (so all 10 users can use one instance):
+```bash
+python fact_entry_web.py --host 0.0.0.0 --port 5050
+```
+Other users connect to `http://<your-ip>:5050`.
+
+**Teams Tab Integration:** Add the URL as a "Website" tab in your Teams channel so it's accessible directly from Teams.
 
 ### 6. Parse Depositions
 ```bash
@@ -89,16 +97,6 @@ python casemap_visualizer.py --output timeline.html
 ```
 Open `timeline.html` in any browser. Share via Teams/SharePoint by uploading the file.
 
-## Building Standalone Companion App
-
-For users who don't have Python installed:
-```bash
-python build_app.py
-```
-Distributes as `dist/FactEntryApp.exe` (Windows) or `dist/FactEntryApp.app` (macOS).
-
-**Note on macOS:** tkinter may need to be installed separately (`brew install python-tk`). The PyInstaller build works on both platforms but must be built on each target OS.
-
 ## Architecture
 
 | Module | Purpose |
@@ -107,12 +105,11 @@ Distributes as `dist/FactEntryApp.exe` (Windows) or `dist/FactEntryApp.app` (mac
 | `all_docs_indexer.py` | Indexes 300k-row all-docs database for fast Bates lookup |
 | `exhibit_list_manager.py` | Manages exhibit list: metadata, missing-doc checks, links |
 | `fact_sheet_manager.py` | Reads/writes facts, imports pre-compiled excerpts with fuzzy matching |
-| `fact_entry_app.py` | Desktop GUI companion app for creating facts during document review |
+| `fact_entry_web.py` | Flask web app for creating facts (works in any browser, Teams-embeddable) |
 | `deposition_parser.py` | Parses deposition transcripts for exhibit references and quotes |
 | `casemap_visualizer.py` | Generates interactive HTML timeline visualization |
 | `sync_runner.py` | Orchestrator that runs all sync operations |
 | `setup_azure.py` | Interactive Azure AD configuration helper |
-| `build_app.py` | Packages companion app as standalone executable |
 
 ## Key Concepts
 
