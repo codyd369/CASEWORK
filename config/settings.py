@@ -11,7 +11,7 @@ AZURE_CLIENT_SECRET = "YOUR_CLIENT_SECRET"  # For daemon/service flows
 AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
 AZURE_SCOPES = ["https://graph.microsoft.com/.default"]
 
-# For interactive (user-delegated) auth — used by the companion app
+# For interactive (user-delegated) auth — used by the web app and setup script
 AZURE_SCOPES_DELEGATED = [
     "Files.ReadWrite.All",
     "Sites.ReadWrite.All",
@@ -69,10 +69,6 @@ BATES_PATTERN = r"[A-Z]{2,5}-\d{5,10}"
 
 # ── Timeline ──
 TIMELINE_DATE_COLUMN = "Family Date"  # Column used for CaseMap timeline x-axis
-
-# ── Companion App Settings ──
-COMPANION_APP_POLL_INTERVAL_MS = 500  # Clipboard polling interval
-COMPANION_APP_WINDOW_TITLE = "Fact Entry — Arbitration Exhibit System"
 
 # ── Sync Runner ──
 SYNC_INTERVAL_SECONDS = 300  # 5 minutes between sync cycles (when running scheduled)

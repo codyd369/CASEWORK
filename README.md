@@ -122,6 +122,6 @@ Open `timeline.html` in any browser. Share via Teams/SharePoint by uploading the
 ## Concurrent Access
 
 - The sync scripts minimize write-lock time by downloading, modifying in-memory, then uploading
-- The companion app saves after each individual fact submission
+- The fact entry web app saves after each individual fact submission
 - Avoid running multiple sync scripts simultaneously
 - Excel Online provides concurrent editing of the exhibit list between sync runs

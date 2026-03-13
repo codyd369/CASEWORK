@@ -18,14 +18,6 @@ extract-msg>=0.45.0
 # Web-based fact entry app
 flask>=3.0.0
 
-# Visualization
-plotly>=5.18.0
-
 # Fuzzy matching for pre-compiled facts
 rapidfuzz>=3.5.0
 
-# Cross-platform clipboard
-pyperclip>=1.8.2
-
-# Packaging (for building standalone executables)
-pyinstaller>=6.0.0
