@@ -24,9 +24,12 @@ from typing import Optional
 from config.settings import (
     BATES_PATTERN,
     DEPOSITIONS_FOLDER,
+    EXHIBIT_LIST_FILENAME,
 )
 from graph_api_client import GraphAPIClient
 from fact_sheet_manager import FactSheetManager
+from exhibit_list_manager import ExhibitListManager
+from all_docs_indexer import AllDocsIndexer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -115,18 +118,51 @@ class DepositionParser:
         self,
         client: Optional[GraphAPIClient] = None,
         fact_manager: Optional[FactSheetManager] = None,
-        exhibit_bates_map: Optional[dict[str, str]] = None,
+        exhibit_manager: Optional[ExhibitListManager] = None,
     ):
         """
         Args:
             client: Graph API client (for SharePoint operations).
             fact_manager: Fact sheet manager (for writing extracted facts).
-            exhibit_bates_map: Mapping of exhibit numbers to Bates numbers.
-                e.g. {"1": "ABC-00012345", "A": "ABC-00054321"}
+            exhibit_manager: Exhibit list manager (for resolving exhibit numbers
+                to Bates numbers via the Deposition column).
         """
         self.client = client
         self.fact_manager = fact_manager
-        self.exhibit_bates_map = exhibit_bates_map or {}
+        self.exhibit_manager = exhibit_manager
+
+        # Per-deponent exhibit maps: {deponent_last_name: {exhibit_num: bates}}
+        # Built from the exhibit list's "Deposition" column.
+        # Format in column: "Smith Ex. 5; Jones Ex. 12"
+        # Deposition files are saved as "{LastName}.txt" or "{LastName}.pdf"
+        self._deponent_maps: dict[str, dict[str, str]] = {}
+        if exhibit_manager:
+            self._deponent_maps = exhibit_manager.build_all_deposition_exhibit_maps()
+
+    def _resolve_exhibit_to_bates(self, exhibit_number: str, deponent_name: str) -> str:
+        """
+        Resolve a deposition exhibit number to a Bates number.
+
+        Uses the exhibit list's Deposition column where entries are formatted as:
+            "LastName Ex. ##; LastName Ex. ##"
+
+        Args:
+            exhibit_number: The exhibit number found in the transcript (e.g. "5").
+            deponent_name: The deponent's last name (from filename).
+
+        Returns: The Bates number, or empty string if not found.
+        """
+        # Normalize: strip any non-digit characters from the exhibit number
+        num = re.sub(r"\D", "", exhibit_number)
+        if not num:
+            return ""
+
+        deponent_key = deponent_name.lower().strip()
+        deponent_map = self._deponent_maps.get(deponent_key, {})
+        bates = deponent_map.get(num, "")
+        if bates:
+            logger.info(f"  Resolved {deponent_name} Ex. {num} → {bates}")
+        return bates
 
     def parse_file(self, file_path: str) -> list[ExhibitReference]:
         """
@@ -208,9 +244,11 @@ class DepositionParser:
 
         for ref in references:
             bates = ref.bates_number
-            if not bates and ref.exhibit_number:
-                # Try to resolve exhibit number to Bates number
-                bates = self.exhibit_bates_map.get(ref.exhibit_number, "")
+            if not bates and ref.exhibit_number and ref.deposition:
+                # Try to resolve exhibit number to Bates via deponent map
+                bates = self._resolve_exhibit_to_bates(
+                    ref.exhibit_number, ref.deposition.deponent_name
+                )
 
             if not bates:
                 unmatched.append(ref)
@@ -301,19 +339,19 @@ class DepositionParser:
                 return ""
 
     def _extract_deposition_info(self, text: str, filename: str) -> DepositionInfo:
-        """Extract deposition metadata from the transcript text."""
+        """
+        Extract deposition metadata from the transcript text.
+
+        The deponent's last name comes from the filename (e.g. "Smith.txt" → "Smith").
+        This matches the format used in the exhibit list's Deposition column
+        ("Smith Ex. 5; Jones Ex. 12").
+        """
         info = DepositionInfo(filename=filename)
 
-        # Try to extract deponent name from common patterns
-        # "DEPOSITION OF JOHN DOE"
-        match = re.search(
-            r"DEPOSITION\s+OF\s+([A-Z][A-Z\s\.]+?)(?:\n|,|\s{2,})",
-            text[:2000]
-        )
-        if match:
-            info.deponent_name = match.group(1).strip().title()
+        # Primary: deponent last name from filename (e.g. "Smith.txt" → "Smith")
+        info.deponent_name = Path(filename).stem
 
-        # Try to extract date
+        # Try to extract date from transcript text
         date_match = re.search(
             r"(?:taken\s+on|dated?|held\s+on)\s+(\w+\s+\d{1,2},?\s+\d{4})",
             text[:3000],
@@ -321,17 +359,6 @@ class DepositionParser:
         )
         if date_match:
             info.deposition_date = date_match.group(1)
-
-        # Fallback: extract from filename
-        if not info.deponent_name:
-            # Try pattern like "Depo_JohnDoe_2024-01-15.txt"
-            name_from_file = Path(filename).stem
-            # Remove common prefixes
-            for prefix in ("depo_", "deposition_", "transcript_"):
-                if name_from_file.lower().startswith(prefix):
-                    name_from_file = name_from_file[len(prefix):]
-                    break
-            info.deponent_name = name_from_file.replace("_", " ").replace("-", " ")
 
         return info
 
@@ -353,11 +380,19 @@ class DepositionParser:
                     deposition=depo_info,
                 )
 
-                # Try to find a Bates number near this reference
-                nearby = text[max(0, position - 200):position + 500]
-                bates_match = BATES_IN_TRANSCRIPT.search(nearby)
-                if bates_match:
-                    ref.bates_number = bates_match.group()
+                # Resolve exhibit number to Bates via the exhibit list's
+                # Deposition column (e.g. "Smith Ex. 5" → Bates number)
+                resolved_bates = self._resolve_exhibit_to_bates(
+                    exhibit_num, depo_info.deponent_name
+                )
+                if resolved_bates:
+                    ref.bates_number = resolved_bates
+                else:
+                    # Fallback: look for a Bates number near this reference in text
+                    nearby = text[max(0, position - 200):position + 500]
+                    bates_match = BATES_IN_TRANSCRIPT.search(nearby)
+                    if bates_match:
+                        ref.bates_number = bates_match.group()
 
                 # Extract page:line reference
                 ref.page_line = self._find_page_line(text, position)
@@ -487,14 +522,29 @@ def main():
 
     client = None
     fact_manager = None
+    exhibit_manager = None
 
-    if args.sharepoint or args.write_facts:
+    # Always connect to SharePoint to load the exhibit list (needed for
+    # resolving exhibit numbers to Bates via the Deposition column)
+    needs_sharepoint = args.sharepoint or args.write_facts or True
+    if needs_sharepoint:
         client = GraphAPIClient()
+
+        # Load exhibit list to build deponent → exhibit → Bates maps
+        indexer = AllDocsIndexer(client)  # Empty indexer (no need to load all-docs here)
+        exhibit_manager = ExhibitListManager(client, indexer)
+        exhibit_manager.load()
+        logger.info("Exhibit list loaded for exhibit-to-Bates resolution.")
+
         if args.write_facts:
             fact_manager = FactSheetManager(client)
             fact_manager.load()
 
-    depo_parser = DepositionParser(client=client, fact_manager=fact_manager)
+    depo_parser = DepositionParser(
+        client=client,
+        fact_manager=fact_manager,
+        exhibit_manager=exhibit_manager,
+    )
 
     # Parse transcripts
     references = []

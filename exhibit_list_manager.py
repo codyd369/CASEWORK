@@ -299,6 +299,83 @@ class ExhibitListManager:
                 return record
         return None
 
+    def build_deposition_exhibit_map(self, deponent_last_name: str) -> dict[str, str]:
+        """
+        Build a mapping of deposition exhibit numbers to Bates numbers
+        for a specific deponent.
+
+        Reads the "Deposition" column which contains entries like:
+            "Smith Ex. 5; Jones Ex. 12"
+
+        For deponent "Smith", this would produce: {"5": "ABC-00012345"}
+
+        Args:
+            deponent_last_name: Last name of the deponent (case-insensitive).
+
+        Returns: Dict mapping exhibit number strings to Bates numbers.
+                 e.g. {"5": "ABC-00012345", "12": "ABC-00067890"}
+        """
+        depo_col = self._col("Deposition")
+        if not depo_col:
+            logger.warning("No 'Deposition' column found in exhibit list.")
+            return {}
+
+        # Pattern: "LastName Ex. ##" — captures the exhibit number
+        pattern = re.compile(
+            rf"\b{re.escape(deponent_last_name)}\s+Ex\.\s*(\d+)\b",
+            re.IGNORECASE,
+        )
+
+        exhibit_map = {}
+        for row, bates in self.get_all_bates_numbers():
+            depo_val = self._get_cell_value(row, "Deposition")
+            if not depo_val:
+                continue
+
+            # Split by semicolon and check each entry
+            for entry in depo_val.split(";"):
+                match = pattern.search(entry.strip())
+                if match:
+                    exhibit_num = match.group(1)
+                    exhibit_map[exhibit_num] = bates
+                    logger.debug(f"  Mapped {deponent_last_name} Ex. {exhibit_num} → {bates}")
+
+        logger.info(f"Built deposition exhibit map for '{deponent_last_name}': "
+                     f"{len(exhibit_map)} exhibits.")
+        return exhibit_map
+
+    def build_all_deposition_exhibit_maps(self) -> dict[str, dict[str, str]]:
+        """
+        Build exhibit-to-Bates maps for ALL deponents found in the Deposition column.
+
+        Returns: {deponent_last_name: {exhibit_num: bates_number, ...}, ...}
+        """
+        depo_col = self._col("Deposition")
+        if not depo_col:
+            return {}
+
+        # First pass: collect all unique deponent names
+        name_pattern = re.compile(r"(\w+)\s+Ex\.\s*\d+", re.IGNORECASE)
+        deponent_names = set()
+
+        for row, bates in self.get_all_bates_numbers():
+            depo_val = self._get_cell_value(row, "Deposition")
+            if not depo_val:
+                continue
+            for entry in depo_val.split(";"):
+                match = name_pattern.search(entry.strip())
+                if match:
+                    deponent_names.add(match.group(1))
+
+        # Second pass: build maps for each deponent
+        all_maps = {}
+        for name in deponent_names:
+            all_maps[name.lower()] = self.build_deposition_exhibit_map(name)
+
+        logger.info(f"Built exhibit maps for {len(all_maps)} deponents: "
+                     f"{', '.join(sorted(all_maps.keys()))}")
+        return all_maps
+
     def get_document_url(self, bates_number: str) -> Optional[str]:
         """Get the SharePoint URL for opening a document by its Bates number."""
         folder_files = self.client.list_files_in_folder(DOCUMENTS_FOLDER)
